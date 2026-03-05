@@ -101,6 +101,11 @@ class Gr00tN1d6Config(PretrainedConfig):
     # Multi-embodiment parameters
     max_num_embodiments: int = 32
 
+    # Depth Encoder parameters
+    use_depth_encoder: bool = False
+    tune_depth_encoder: bool = True
+    depth_encoder_output_dim: int = 2048  # Should match backbone_embedding_dim if concatenating
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():

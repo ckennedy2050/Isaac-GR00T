@@ -20,6 +20,49 @@ import numpy as np
 import pandas as pd
 import torch
 import tyro
+import yaml
+
+# This workaround is executed in policy/gr00t_policy.py
+# -----------------------------------------------------------------------------
+# WORKAROUND: RTX PRO 6000 (Blackwell) Support
+# Triton currently crashes on sm_120. We spoof sm_90 (Hopper) to bypass this.
+# Blackwell is backward compatible with Hopper kernels.
+# -----------------------------------------------------------------------------
+if torch.cuda.is_available():
+    original_get_capability = torch.cuda.get_device_capability
+
+    def patched_get_capability(device=None):
+        # Allow the user to query specific devices, but default to current
+        if device is None:
+            device = torch.cuda.current_device()
+
+        # Get the real capability
+        real_cap = original_get_capability(device)
+
+        print(f"Detected GPU arch capability: {real_cap}")
+        # If the device is Blackwell (sm_120 ie major=12), spoof it as Hopper (sm_90 ie 9,0)
+        if real_cap[0] == 12:
+            print('Spoofing Hopper arch to avoid lack of Blackwell support')
+            return (9, 0)
+        return real_cap
+
+    torch.cuda.get_device_capability = patched_get_capability
+# -----------------------------------------------------------------------------
+# if torch.cuda.is_available():
+#     original_cuda_is_available = torch.cuda.is_available
+#
+#     def patched_cuda_is_available():
+#         # Override default torch function
+#         print('Spoofing torch.cuda.is_available() to support CPU processing')
+#         return False
+#
+#     torch.cuda.is_available = patched_cuda_is_available
+
+
+
+
+
+
 
 
 warnings.simplefilter("ignore", category=FutureWarning)
@@ -203,7 +246,9 @@ def plot_trajectory_results(
     state_keys: list[str],
     action_keys: list[str],
     action_horizon: int,
+    do_cumsum: bool,
     save_plot_path: str,
+    show_plot: bool,
 ) -> None:
     """
     Plot and save trajectory results comparing ground truth and predicted actions.
@@ -216,8 +261,23 @@ def plot_trajectory_results(
         state_keys: List of state modality keys
         action_keys: List of action modality keys
         action_horizon: Action horizon used for inference
+        do_cumsum: When True, plots a cumulative sum of the arm action dimensions
         save_plot_path: Path to save the plot
+        show_plot: Show the plot on screen
     """
+    # Convert all inputs from Radians to Degrees
+    state_joints_across_time = np.rad2deg(state_joints_across_time)
+    gt_action_across_time = np.rad2deg(gt_action_across_time)
+    pred_action_across_time = np.rad2deg(pred_action_across_time)
+
+    if do_cumsum:
+        print('Summing action space')
+        gt_action_sum = np.cumsum(gt_action_across_time[:, :6], axis=0)
+        pred_action_sum = np.cumsum(pred_action_across_time[:, :6], axis=0)
+
+        gt_action_across_time[:, :6] = gt_action_sum
+        pred_action_across_time[:, :6] = pred_action_sum
+
     actual_steps = len(gt_action_across_time)
     action_dim = gt_action_across_time.shape[1]
 
@@ -273,27 +333,33 @@ def plot_trajectory_results(
     # Create filename with trajectory ID
     Path(save_plot_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_plot_path)
-
+    if show_plot:
+        plt.show()
     plt.close()  # Close the figure to free memory
+    logging.info(f"Saved plot to {save_plot_path}")
 
 
 def parse_observation_gr00t(
     obs: dict[str, Any], modality_configs: dict[str, Any]
 ) -> dict[str, Any]:
     new_obs = {}
-    for modality in ["video", "state", "language"]:
+    for modality in ["video", "state", "language", "depth"]:
+        if modality not in modality_configs:
+            continue
         new_obs[modality] = {}
         for key in modality_configs[modality].modality_keys:
             if modality == "language":
                 parsed_key = key
             else:
                 parsed_key = f"{modality}.{key}"
-            arr = obs[parsed_key]
-            # Add batch dimension
-            if isinstance(arr, str):
-                new_obs[modality][key] = [[arr]]
-            else:
-                new_obs[modality][key] = arr[None, :]
+            
+            if parsed_key in obs:
+                arr = obs[parsed_key]
+                # Add batch dimension
+                if isinstance(arr, str):
+                    new_obs[modality][key] = [[arr]]
+                else:
+                    new_obs[modality][key] = arr[None, :]
     return new_obs
 
 
@@ -333,6 +399,11 @@ def prepare_observation_data(
         obs[f"state.{k}"] = v  # (T, D)
     for k, v in data_point.images.items():
         obs[f"video.{k}"] = np.array(v)  # (T, H, W, C)
+    
+    if data_point.depth is not None:
+        for k, v in data_point.depth.items():
+            obs[f"depth.{k}"] = np.array(v) # (T, H, W, C) or (T, H, W)
+
     for language_key in loader.modality_configs["language"].modality_keys:
         obs[language_key] = data_point.text
 
@@ -507,7 +578,9 @@ def evaluate_predictions(
     traj_id,
     actual_steps,
     action_horizon,
+    do_cumsum=False,
     save_plot_path=None,
+    show_plot=False
 ):
     def extract_state_joints(traj: pd.DataFrame, columns: list[str]):
         np_dict = {}
@@ -528,13 +601,14 @@ def evaluate_predictions(
     # calc MSE and MAE across time
     mse = np.mean((gt_action_across_time - pred_action_across_time) ** 2)
     mae = np.mean(np.abs(gt_action_across_time - pred_action_across_time))
+    medae = np.median(np.abs(gt_action_across_time - pred_action_across_time))
 
     logging.info(f"Unnormalized Action MSE across single traj: {mse}")
     logging.info(f"Unnormalized Action MAE across single traj: {mae}")
 
-    logging.info(f"state_joints vs time {state_joints_across_time.shape}")
-    logging.info(f"gt_action_joints vs time {gt_action_across_time.shape}")
-    logging.info(f"pred_action_joints vs time {pred_action_across_time.shape}")
+    logging.info(f"obs_state vs time {state_joints_across_time.shape}")
+    logging.info(f"gt_action_state vs time {gt_action_across_time.shape}")
+    logging.info(f"pred_action_state vs time {pred_action_across_time.shape}")
 
     # Plot trajectory results
     plot_trajectory_results(
@@ -545,10 +619,12 @@ def evaluate_predictions(
         state_keys=state_keys,
         action_keys=action_keys,
         action_horizon=action_horizon,
+        do_cumsum=do_cumsum,
         save_plot_path=save_plot_path or f"/tmp/stand_alone_inference/traj_{traj_id}.jpeg",
+        show_plot=show_plot,
     )
 
-    return mse, mae
+    return mse, mae, medae
 
 
 @dataclass
@@ -561,7 +637,9 @@ class ArgsConfig:
     port: int = 5555
     """Port to connect to."""
 
-    steps: int = 200
+    device: str = "cuda"
+
+    steps: int = 300
     """Maximum number of steps to evaluate (will be capped by trajectory length)."""
 
     traj_ids: list[int] = field(default_factory=lambda: [0])
@@ -594,11 +672,20 @@ class ArgsConfig:
     save_plot_path: str | None = None
     """Path to save the plot to."""
 
+    show_plot: bool = True
+    """Whether to render plots on screen"""
+
+    cumsum: bool = False
+    """Whether to plot cumulative some of arm actions"""
+
     skip_timing_steps: int = 1
     """Number of initial inference steps to skip when calculating timing statistics (default: 1 to exclude warmup)."""
 
     get_performance_stats: bool = True
     """Agreegate and summarize timing and accuracy stats across several runs"""
+
+    log_performance_stats: bool = False
+    """Save timing and accuracy stats to the checkpoint directory"""
 
     seed: int = 42
     """Seed to use for reproducibility."""
@@ -609,6 +696,7 @@ def main(args: ArgsConfig):
     logging.basicConfig(level=logging.INFO)
     logging.info("\n" + "=" * 80)
     logging.info("=" * 80)
+    logging.info(f"Device: {args.device}")
     logging.info(f"Model Path: {args.model_path}")
     logging.info(f"Dataset Path: {args.dataset_path}")
     logging.info(f"Embodiment Tag: {args.embodiment_tag}")
@@ -622,6 +710,11 @@ def main(args: ArgsConfig):
     logging.info(f"Seed: {args.seed}")
     set_seed(args.seed)
     logging.info("=" * 80)
+
+    # CK Hack
+    # if torch.cuda.is_available() and args.device == "cpu":
+    #     torch.cuda.is_available = patched_cuda_is_available
+
 
     # Download model checkpoint
     local_model_path = args.model_path
@@ -663,13 +756,16 @@ def main(args: ArgsConfig):
             logging.info(" TensorRT mode enabled")
         else:
             # PyTorch mode with torch.compile
-            policy.model.action_head.model.forward = torch.compile(
-                policy.model.action_head.model.forward, mode="max-autotune"
-            )
-            logging.info(" PyTorch mode enabled with torch.compile")
+            # policy.model.action_head.model.forward = torch.compile(
+            #     policy.model.action_head.model.forward, mode="max-autotune"
+            # )
+            # logging.info(" PyTorch mode enabled with torch.compile")
+            # CK
+            logging.info(" PyTorch mode enabled (torch.compile disabled to bypass Triton error)")
 
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
+
     else:
         assert 0, "Please provide valid model_path argument for inference"
     model_load_time = time.time() - model_load_start
@@ -705,6 +801,7 @@ def main(args: ArgsConfig):
 
     all_mse = []
     all_mae = []
+    all_medae = []
     all_timings = []
     pred_actions = []
 
@@ -734,7 +831,7 @@ def main(args: ArgsConfig):
         pred_actions.append(pred_action_across_time)
 
         if args.get_performance_stats:
-            mse, mae = evaluate_predictions(
+            mse, mae, medae = evaluate_predictions(
                 state_keys,
                 action_keys,
                 pred_action_across_time,
@@ -742,12 +839,15 @@ def main(args: ArgsConfig):
                 traj_id,
                 actual_steps,
                 args.action_horizon,
+                do_cumsum=args.cumsum,
                 save_plot_path=None,
+                show_plot=args.show_plot
             )
 
-            logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}")
+            logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}, MEDAE: {medae}")
             all_mse.append(mse)
             all_mae.append(mae)
+            all_medae.append(medae)
             all_timings.append(timing_dict)
 
     if args.get_performance_stats:
@@ -759,9 +859,30 @@ def main(args: ArgsConfig):
         if all_mse:
             avg_mse = np.mean(np.array(all_mse))
             avg_mae = np.mean(np.array(all_mae))
+            avg_medae = np.mean(np.array(all_medae))
             logging.info("\nMetrics:")
             logging.info(f"  Average MSE across all trajs: {avg_mse:.6f}")
             logging.info(f"  Average MAE across all trajs: {avg_mae:.6f}")
+            logging.info(f"  Average MEDAE across all trajs: {avg_medae:.6f}")
+
+            if args.log_performance_stats:
+                stats_file = os.path.join(args.model_path, 'eval_stats.yaml')
+
+                stats_data = {
+                    "dataset_path": args.dataset_path,
+                    "traj_ids": args.traj_ids,
+                    "num_trajectories": len(all_mse),
+                    "avg_mse": avg_mse.item(),
+                    "avg_mae": avg_mae.item(),
+                    "avg_medae": avg_medae.item(),
+                }
+
+                with open(stats_file, "w") as f:
+                    yaml.dump(stats_data, f, default_flow_style=False)
+                print(f'Stats saved to {stats_file}')
+
+
+
         else:
             logging.info("No valid trajectories were evaluated.")
 

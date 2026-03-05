@@ -133,6 +133,8 @@ class ReplayPolicy(BasePolicy):
             - language: dict[str, list[list[str]]]
                 - Shape: (B, T) where each element is a string
                 - T: temporal horizon (typically 1 for language)
+            - depth: dict[str, np.ndarray[np.float32, (B, T, H, W)]] or (B, T, H, W, C)
+                - Optional, if depth encoder is used
 
         Args:
             observation: Dictionary containing video, state, and language modalities
@@ -145,6 +147,12 @@ class ReplayPolicy(BasePolicy):
             assert modality in observation, f"Observation must contain a '{modality}' key"
             assert isinstance(observation[modality], dict), (
                 f"Observation '{modality}' must be a dictionary. Got {type(observation[modality])}"
+            )
+        
+        if "depth" in self.modality_configs:
+            assert "depth" in observation, "Observation must contain a 'depth' key"
+            assert isinstance(observation["depth"], dict), (
+                f"Observation 'depth' must be a dictionary. Got {type(observation['depth'])}"
             )
 
         # Track batch size across modalities to ensure consistency
@@ -250,6 +258,30 @@ class ReplayPolicy(BasePolicy):
 
                 assert isinstance(batch_item[0], str), (
                     f"Language batch item must be a string. Got {type(batch_item[0])}"
+                )
+        
+        # ===== DEPTH VALIDATION =====
+        if "depth" in self.modality_configs:
+            for depth_key in self.modality_configs["depth"].modality_keys:
+                if bs == -1:
+                    bs = len(observation["depth"][depth_key])
+                else:
+                    assert len(observation["depth"][depth_key]) == bs, (
+                        f"Depth key '{depth_key}' must have batch size {bs}. Got {len(observation['depth'][depth_key])}"
+                    )
+                
+                assert depth_key in observation["depth"], (
+                    f"Depth key '{depth_key}' must be in observation"
+                )
+                
+                batched_depth = observation["depth"][depth_key]
+                assert isinstance(batched_depth, np.ndarray), (
+                    f"Depth key '{depth_key}' must be a numpy array. Got {type(batched_depth)}"
+                )
+                
+                # Verify shape has 4 or 5 dimensions: (B, T, H, W) or (B, T, H, W, C)
+                assert batched_depth.ndim in [4, 5], (
+                    f"Depth key '{depth_key}' must be a numpy array of shape (B, T, H, W) or (B, T, H, W, C), got {batched_depth.shape}"
                 )
 
     def check_action(self, action: dict[str, Any]) -> None:

@@ -7,6 +7,7 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
 )
+from gr00t.model.modules.depth_encoder import DepthEncoder
 import torch
 from torch import nn
 from torch.distributions import Beta
@@ -453,6 +454,18 @@ class Gr00tN1d6(PreTrainedModel):
 
         # Initialize action head
         self.action_head = Gr00tN1d6ActionHead(config)
+        
+        # Initialize depth encoder if enabled
+        if config.use_depth_encoder:
+            self.depth_encoder = DepthEncoder(output_dim=config.depth_encoder_output_dim)
+            print('Loaded depth encoder!')
+            if not config.tune_depth_encoder:
+                print('Freezing depth encoder!')
+                self.depth_encoder.requires_grad_(False)
+        else:
+            print('NOT loading depth encoder!')
+            self.depth_encoder = None
+            
         from .processing_gr00t_n1d6 import Gr00tN1d6DataCollator
 
         self.collator = Gr00tN1d6DataCollator(
@@ -490,6 +503,22 @@ class Gr00tN1d6(PreTrainedModel):
 
         backbone_inputs = tree.map_structure(to_device_with_dtype, backbone_inputs)
         action_inputs = tree.map_structure(to_device_with_dtype, action_inputs)
+        
+        # Handle depth input if present and depth encoder is enabled
+        if self.depth_encoder is not None and "depth" in inputs:
+            depth_input = inputs["depth"]
+            if torch.is_floating_point(depth_input):
+                depth_input = depth_input.to(self.device, dtype=self.dtype)
+            else:
+                depth_input = depth_input.to(self.device)
+            
+            # Check for NaNs and Infs in depth input
+            if torch.isnan(depth_input).any() or torch.isinf(depth_input).any():
+                print("Warning: Depth input contains NaNs or Infs! Replacing with 0.0")
+                depth_input = torch.nan_to_num(depth_input, nan=0.0, posinf=0.0, neginf=0.0)
+                
+            # Add depth to backbone inputs so it can be passed to forward
+            backbone_inputs["depth"] = depth_input
 
         return backbone_inputs, action_inputs
 
@@ -508,6 +537,48 @@ class Gr00tN1d6(PreTrainedModel):
         # Prepare inputs for backbone and action head
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
+        
+        # Process depth if available
+        if self.depth_encoder is not None and "depth" in backbone_inputs:
+            depth_features = self.depth_encoder(backbone_inputs["depth"])
+            
+            # Check for NaNs in depth features
+            if torch.isnan(depth_features).any():
+                print("Warning: Depth features contain NaNs! This will cause training instability.")
+            
+            # Concatenate depth features to backbone features
+            # Assuming backbone_features is [B, T, D] and depth_features is [B, D] or [B, T, D]
+            # We might need to adjust dimensions or concatenation strategy depending on architecture
+            # For now, let's assume we append depth tokens to the sequence
+            if depth_features.dim() == 2:
+                depth_features = depth_features.unsqueeze(1) # [B, 1, D]
+            
+            backbone_outputs["backbone_features"] = torch.cat(
+                [backbone_outputs["backbone_features"], depth_features], dim=1
+            )
+            
+            # Update attention mask
+            if "backbone_attention_mask" in backbone_outputs:
+                depth_mask = torch.ones(
+                    (depth_features.shape[0], depth_features.shape[1]), 
+                    device=backbone_outputs["backbone_attention_mask"].device,
+                    dtype=backbone_outputs["backbone_attention_mask"].dtype
+                )
+                backbone_outputs["backbone_attention_mask"] = torch.cat(
+                    [backbone_outputs["backbone_attention_mask"], depth_mask], dim=1
+                )
+                
+            # Update image mask if present (depth is considered image-like for attention purposes)
+            if "image_mask" in backbone_outputs:
+                depth_image_mask = torch.ones(
+                    (depth_features.shape[0], depth_features.shape[1]),
+                    device=backbone_outputs["image_mask"].device,
+                    dtype=backbone_outputs["image_mask"].dtype
+                )
+                backbone_outputs["image_mask"] = torch.cat(
+                    [backbone_outputs["image_mask"], depth_image_mask], dim=1
+                )
+
         action_outputs = self.action_head(backbone_outputs, action_inputs)
 
         return action_outputs
@@ -521,6 +592,39 @@ class Gr00tN1d6(PreTrainedModel):
 
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
+        
+        # Process depth if available
+        if self.depth_encoder is not None and "depth" in backbone_inputs:
+            depth_features = self.depth_encoder(backbone_inputs["depth"])
+            if depth_features.dim() == 2:
+                depth_features = depth_features.unsqueeze(1) # [B, 1, D]
+            
+            backbone_outputs["backbone_features"] = torch.cat(
+                [backbone_outputs["backbone_features"], depth_features], dim=1
+            )
+            
+            # Update attention mask
+            if "backbone_attention_mask" in backbone_outputs:
+                depth_mask = torch.ones(
+                    (depth_features.shape[0], depth_features.shape[1]), 
+                    device=backbone_outputs["backbone_attention_mask"].device,
+                    dtype=backbone_outputs["backbone_attention_mask"].dtype
+                )
+                backbone_outputs["backbone_attention_mask"] = torch.cat(
+                    [backbone_outputs["backbone_attention_mask"], depth_mask], dim=1
+                )
+                
+            # Update image mask if present
+            if "image_mask" in backbone_outputs:
+                depth_image_mask = torch.ones(
+                    (depth_features.shape[0], depth_features.shape[1]),
+                    device=backbone_outputs["image_mask"].device,
+                    dtype=backbone_outputs["image_mask"].dtype
+                )
+                backbone_outputs["image_mask"] = torch.cat(
+                    [backbone_outputs["image_mask"], depth_image_mask], dim=1
+                )
+
         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
 
         return action_outputs

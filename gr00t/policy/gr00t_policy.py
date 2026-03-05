@@ -52,7 +52,7 @@ class Gr00tPolicy(BasePolicy):
     3. Runs model inference
     4. Decodes and returns actions
 
-    The policy expects observations with specific modalities (video, state, language)
+    The policy expects observations with specific modalities (video, state, language, depth)
     and returns actions in the format defined by the model's modality configuration.
     """
 
@@ -121,6 +121,8 @@ class Gr00tPolicy(BasePolicy):
                 "state": {k: v[i] for k, v in value["state"].items()},
                 "language": {k: v[i] for k, v in value["language"].items()},
             }
+            if "depth" in value:
+                unbatched_value["depth"] = {k: v[i] for k, v in value["depth"].items()}
             unbatched_obs.append(unbatched_value)
         return unbatched_obs
 
@@ -137,6 +139,7 @@ class Gr00tPolicy(BasePolicy):
             images=observation["video"],
             states=observation["state"],
             actions={},  # No ground truth actions during inference
+            depth=observation.get("depth", None),
             text=observation["language"][self.language_key][0],
             embodiment=self.embodiment_tag,
         )
@@ -160,6 +163,8 @@ class Gr00tPolicy(BasePolicy):
             - language: dict[str, list[list[str]]]
                 - Shape: (B, T) where each element is a string
                 - T: temporal horizon (typically 1 for language)
+            - depth: dict[str, np.ndarray[np.float32, (B, T, H, W)]] or (B, T, H, W, C)
+                - Optional, if depth encoder is used
 
         Args:
             observation: Dictionary containing video, state, and language modalities
@@ -301,6 +306,35 @@ class Gr00tPolicy(BasePolicy):
                 # Verify the instruction itself is a string
                 assert isinstance(batch_item[0], str), (
                     f"Language batch item must be a string. Got {type(batch_item[0])}"
+                )
+        
+        # ===== DEPTH VALIDATION =====
+        # Validate depth if present in modality config
+        if "depth" in self.modality_configs:
+            assert "depth" in observation, "Observation must contain a 'depth' key"
+            for depth_key in self.modality_configs["depth"].modality_keys:
+                if bs == -1:
+                    bs = len(observation["depth"][depth_key])
+                else:
+                    assert len(observation["depth"][depth_key]) == bs, (
+                        f"Depth key '{depth_key}' must have batch size {bs}. Got {len(observation['depth'][depth_key])}"
+                    )
+                
+                assert depth_key in observation["depth"], (
+                    f"Depth key '{depth_key}' must be in observation"
+                )
+                
+                batched_depth = observation["depth"][depth_key]
+                assert isinstance(batched_depth, np.ndarray), (
+                    f"Depth key '{depth_key}' must be a numpy array. Got {type(batched_depth)}"
+                )
+                
+                # Depth can be float32 or uint8 depending on preprocessing
+                # But usually float32 for model input if normalized
+                
+                # Verify shape has 4 or 5 dimensions: (B, T, H, W) or (B, T, H, W, C)
+                assert batched_depth.ndim in [4, 5], (
+                    f"Depth key '{depth_key}' must be a numpy array of shape (B, T, H, W) or (B, T, H, W, C), got {batched_depth.shape}"
                 )
 
     def _get_action(

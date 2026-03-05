@@ -4,15 +4,18 @@ Calculate dataset statistics for LeRobot datasets.
 Note: Please update the `gr00t/configs/data/embodiment_configs.py` file with the correct modality configurations for the dataset you are using before running this script.
 
 Usage:
-    python gr00t/data/stats.py <dataset_path> <embodiment_tag>
+    python gr00t/data/stats.py <dataset_path> <embodiment_tag> [--modality-config-path <path>]
 
 Args:
     dataset_path: Path to the dataset.
     embodiment_tag: Embodiment tag to use to load modality configurations from `gr00t/configs/data/embodiment_configs.py`.
+    modality_config_path: Optional path to a python file containing a custom modality configuration to register.
 """
 
 import json
 from pathlib import Path
+import sys
+import importlib
 
 import numpy as np
 import pandas as pd
@@ -247,7 +250,19 @@ def generate_rel_stats(dataset_path: Path | str, embodiment_tag: EmbodimentTag) 
         json.dump(to_json_serializable(dict(stats)), f, indent=4)
 
 
-def main(dataset_path: Path | str, embodiment_tag: EmbodimentTag):
+def load_modality_config(modality_config_path: str):
+    path = Path(modality_config_path)
+    if path.exists() and path.suffix == ".py":
+        sys.path.append(str(path.parent))
+        importlib.import_module(path.stem)
+        print(f"Loaded modality config: {path}")
+    else:
+        raise FileNotFoundError(f"Modality config path does not exist: {modality_config_path}")
+
+
+def main(dataset_path: Path | str, embodiment_tag: EmbodimentTag, modality_config_path: str | None = None):
+    if modality_config_path is not None:
+        load_modality_config(modality_config_path)
     generate_stats(dataset_path)
     generate_rel_stats(dataset_path, embodiment_tag)
 

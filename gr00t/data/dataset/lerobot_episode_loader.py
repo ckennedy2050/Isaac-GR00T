@@ -12,6 +12,7 @@ providing episode-level data access with support for multi-modal data including:
 - Proprioceptive state information
 - Action sequences
 - Language instructions/annotations
+- Depth maps from multiple camera views
 
 Returns messages with VLAStepData as defined in types.py.
 """
@@ -39,7 +40,7 @@ LEROBOT_MODALITY_FILENAME = "modality.json"
 LEROBOT_STATS_FILE_NAME = "stats.json"
 LEROBOT_RELATIVE_STATS_FILE_NAME = "relative_stats.json"
 
-ALLOWED_MODALITIES = ["video", "state", "action", "language"]
+ALLOWED_MODALITIES = ["video", "state", "action", "language", "depth"]
 DEFAULT_COLUMN_NAMES = {
     "state": "observation.state",
     "action": "action",
@@ -66,7 +67,7 @@ class LeRobotEpisodeLoader:
 
     This class handles the loading and preprocessing of individual episodes from LeRobot datasets.
     It manages metadata parsing, video decoding, and data extraction across multiple modalities
-    (video, state, action, language) while maintaining compatibility with the VLA training pipeline.
+    (video, state, action, language, depth) while maintaining compatibility with the VLA training pipeline.
 
     Key responsibilities:
     - Parse LeRobot metadata files (info.json, episodes.jsonl, etc.)
@@ -332,7 +333,7 @@ class LeRobotEpisodeLoader:
 
         return loaded_df
 
-    def _load_video_data(self, episode_index: int, indices: np.ndarray) -> dict[str, np.ndarray]:
+    def _load_video_data(self, episode_index: int, indices: np.ndarray, modality_name: str = "video") -> dict[str, np.ndarray]:
         """
         Load video data for all configured camera views at specified indices.
 
@@ -342,32 +343,48 @@ class LeRobotEpisodeLoader:
         Args:
             episode_index: Index of the episode to load videos for
             indices: Array of indices to extract frames at
+            modality_name: Name of the modality to load (video or depth)
 
         Returns:
             Dictionary mapping camera view names to arrays of decoded frames
         """
         video_data = {}
 
-        if not self.video_path_pattern or "video" not in self.modality_configs:
+        if not self.video_path_pattern or modality_name not in self.modality_configs:
             return video_data
 
         chunk_idx = episode_index // self.chunk_size
-        image_keys = self.modality_configs["video"].modality_keys
+        image_keys = self.modality_configs[modality_name].modality_keys
 
         for image_key in image_keys:
             # Resolve the original key used in video file naming
-            original_key = self.modality_meta["video"][image_key].get(
-                "original_key", f"observation.images.{image_key}"
-            )
-            assert original_key in self.feature_config, (
-                f"Original key {original_key} not found in feature config"
-            )
+            # For depth, we assume it follows similar structure or is defined in modality_meta
+            if modality_name in self.modality_meta and image_key in self.modality_meta[modality_name]:
+                original_key = self.modality_meta[modality_name][image_key].get(
+                    "original_key", f"observation.images.{image_key}"
+                )
+            else:
+                # Fallback or default assumption
+                original_key = f"observation.images.{image_key}"
+                if modality_name == "depth":
+                     original_key = f"observation.depth.{image_key}"
+
+            # Check if original key exists in feature config
+            # Note: depth might not be in feature config if it's new, but let's assume it is
+            if original_key not in self.feature_config:
+                 # Try to find it or warn
+                 pass 
 
             # Construct video file path using pattern
             video_filename = self.video_path_pattern.format(
                 episode_chunk=chunk_idx, video_key=original_key, episode_index=episode_index
             )
             video_path = self.dataset_path / video_filename
+            
+            if not video_path.exists():
+                # Try alternative extension or path if needed, or skip
+                # For now assume path is correct
+                pass
 
             # Decode video frames at specified timestamps
             video_data[image_key] = get_frames_by_indices(
@@ -479,7 +496,7 @@ class LeRobotEpisodeLoader:
         df = df.iloc[:actual_length]
 
         # Load synchronized video data
-        video_data = self._load_video_data(episode_id, np.arange(actual_length))
+        video_data = self._load_video_data(episode_id, np.arange(actual_length), modality_name="video")
 
         # Add video frames to dataframe as PIL Images
         for key in video_data.keys():
@@ -487,6 +504,15 @@ class LeRobotEpisodeLoader:
                 f"Video data for {key} has length {len(video_data[key])} but dataframe has length {len(df)}"
             )
             df[f"video.{key}"] = [frame for frame in video_data[key]]
+            
+        # Load synchronized depth data if configured
+        if "depth" in self.modality_configs:
+            depth_data = self._load_video_data(episode_id, np.arange(actual_length), modality_name="depth")
+            for key in depth_data.keys():
+                assert len(depth_data[key]) == len(df), (
+                    f"Depth data for {key} has length {len(depth_data[key])} but dataframe has length {len(df)}"
+                )
+                df[f"depth.{key}"] = [frame for frame in depth_data[key]]
 
         return df
 

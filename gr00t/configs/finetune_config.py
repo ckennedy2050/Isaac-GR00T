@@ -116,3 +116,10 @@ class FinetuneConfig:
 
     num_shards_per_epoch: int = int(1e5)
     """Number of shards to use for the dataset. reduce this number if vram is limited."""
+
+    # --- Depth Encoder Configuration ---
+    use_depth_encoder: bool = False
+    """If True, use a dedicated depth encoder to process depth images."""
+
+    tune_depth_encoder: bool = True
+    """If True, fine-tune the depth encoder during training."""

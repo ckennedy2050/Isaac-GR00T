@@ -94,6 +94,9 @@ class Gr00tN1d6DataCollator:
                 )
                 for k, v in vlm_inputs.items():
                     batch[k] = v
+            elif key == "depth":
+                # Stack depth images
+                batch[key] = torch.stack(values)
             elif key in ("pixel_values", "image_grid_thw", "attention_mask", "input_ids"):
                 raise Exception("Not implemented")
             else:
@@ -386,6 +389,80 @@ class Gr00tN1d6Processor(BaseProcessor):
         if action_mask is not None:
             transformed_inputs["action_mask"] = action_mask
         transformed_inputs["embodiment_id"] = self.embodiment_id_mapping[embodiment_tag.value]
+        
+        # Process depth if available
+        if hasattr(content, "depth") and content.depth is not None:
+            # The error is here: self.modality_configs[embodiment_tag.value] is a dict of ModalityConfig objects
+            # ModalityConfig is a dataclass, so it doesn't have a .get() method.
+            # We need to check if "depth" is in the keys of the dict.
+            
+            depth_config = None
+            if "depth" in self.modality_configs[embodiment_tag.value]:
+                depth_config = self.modality_configs[embodiment_tag.value]["depth"]
+            
+            if depth_config:
+                depth_keys = depth_config.modality_keys
+                depth_images = content.depth
+                temporal_stacked_depth = {}
+                
+                if self.use_albumentations:
+                     for view in depth_keys:
+                        if view in depth_images:
+                            imgs = depth_images[view]
+                            transformed_depths = []
+                            for img in imgs:
+                                if isinstance(img, Image.Image):
+                                    img = np.array(img)
+                                
+                                augmented = image_transform(image=img)
+                                d_img = augmented["image"]
+                                
+                                if isinstance(d_img, np.ndarray):
+                                    d_img = torch.from_numpy(d_img)
+                                
+                                if d_img.ndim == 2:
+                                    d_img = d_img.unsqueeze(0) # 1HW
+                                elif d_img.ndim == 3:
+                                    if d_img.shape[2] == 1:
+                                        d_img = d_img.permute(2, 0, 1) # 1HW
+                                    elif d_img.shape[2] == 3:
+                                        # If it has 3 channels (grayscale RGB), take first
+                                        d_img = d_img.permute(2, 0, 1)[0:1]
+                                    else:
+                                        d_img = d_img.permute(2, 0, 1)[0:1]
+                                
+                                transformed_depths.append(d_img)
+                            
+                            temporal_stacked_depth[view] = torch.stack(transformed_depths)
+                else:
+                    # Torchvision
+                    for view in depth_keys:
+                        if view in depth_images:
+                            imgs = depth_images[view]
+                            processed_imgs = []
+                            for img in imgs:
+                                t_img = image_transform(img)
+                                # Handle 3-channel grayscale by taking first channel
+                                if t_img.shape[0] == 3:
+                                    t_img = t_img[0:1]
+                                processed_imgs.append(t_img)
+                            
+                            temporal_stacked_depth[view] = torch.stack(processed_imgs)
+                
+                if temporal_stacked_depth:
+                    stacked_depth = torch.stack([temporal_stacked_depth[view] for view in depth_keys], dim=1)
+                    stacked_depth = stacked_depth.flatten(0, 1)
+                    stacked_depth = stacked_depth.float()
+                    
+                    # Normalize to [0, 1] if it seems to be [0, 255]
+                    # Replace NaNs and Infs with 0.0
+                    stacked_depth = torch.nan_to_num(stacked_depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+                    if stacked_depth.max() > 1.0:
+                        stacked_depth = stacked_depth / 255.0
+
+                    transformed_inputs["depth"] = stacked_depth
+
         return transformed_inputs
 
     def _get_vlm_inputs(

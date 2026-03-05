@@ -75,6 +75,8 @@ class Gr00tN1d6Pipeline(ModelPipeline):
                 tune_vlln=self.config.model.tune_vlln,
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
+                use_depth_encoder=self.config.model.use_depth_encoder,
+                tune_depth_encoder=self.config.model.tune_depth_encoder,
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,

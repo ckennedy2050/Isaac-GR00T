@@ -47,6 +47,7 @@ class VLAStepData:
         str, np.ndarray
     ]  # state_name -> np.ndarray (dim,) for single step or (horizon, dim) for trajectory
     actions: dict[str, np.ndarray]  # action_name -> np.ndarray (horizon, dim) for action chunk
+    depth: dict[str, list[np.ndarray]] | None = None # view_name -> list[depth_img]
     text: str | None = None  # Optional task description or instruction
     embodiment: EmbodimentTag = (
         EmbodimentTag.NEW_EMBODIMENT

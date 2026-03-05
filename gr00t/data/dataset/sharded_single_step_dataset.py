@@ -42,7 +42,7 @@ def extract_step_data(
                     ]
                 )
             else:
-                # Keep as lists for other modalities (video, language)
+                # Keep as lists for other modalities (video, language, depth)
                 step_data[modality][key] = modality_data.tolist()
 
     # Parse extracted data into VLAStepData structure
@@ -50,6 +50,8 @@ def extract_step_data(
     state_data = step_data.get("state", {})
     action_data = step_data.get("action", {})
     language_data = step_data.get("language", {})
+    depth_data = step_data.get("depth", None)
+    
     assert len(language_data) == 1, f"Expected 1 language, got {len(language_data)}"
     text = language_data[list(language_data.keys())[0]][0]
 
@@ -57,6 +59,7 @@ def extract_step_data(
         images=video_data,
         states=state_data,
         actions=action_data,
+        depth=depth_data,
         text=text,
         embodiment=embodiment_tag,
     )

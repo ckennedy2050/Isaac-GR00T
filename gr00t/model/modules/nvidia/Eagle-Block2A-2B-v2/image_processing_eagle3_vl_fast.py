@@ -29,7 +29,7 @@ from transformers.image_utils import (
     SizeDict,
     get_image_size,
     make_flat_list_of_images,
-    make_batched_videos,
+    #make_batched_videos,
     validate_kwargs
 )
 from transformers.processing_utils import Unpack
@@ -153,12 +153,14 @@ class Eagle3_VLImageProcessorFast(BaseImageProcessorFast):
         image_std: Optional[Union[float, List[float]]],
         do_pad: bool,
         return_tensors: Optional[Union[str, TensorType]],
+        disable_grouping=False,
     ) -> BatchFeature:
 
         image_sizes = [get_image_size(image, channel_dim=ChannelDimension.FIRST) for image in images]
 
         # Group images by size for further processing
         # Needed in case do_resize is False, or resize returns images with different sizes
+        # grouped_images, grouped_images_index = group_images_by_shape(images, disable_grouping=disable_grouping)
         grouped_images, grouped_images_index = group_images_by_shape(images)
         processed_images_grouped = {}
         for shape, stacked_images in grouped_images.items():
@@ -213,6 +215,7 @@ class Eagle3_VLImageProcessorFast(BaseImageProcessorFast):
         # Pop kwargs that are not needed in _preprocess
         kwargs.pop("default_to_square")
         kwargs.pop("data_format")
+        
         if images is not None:
             return self._preprocess(images, **kwargs)
         elif videos is not None:

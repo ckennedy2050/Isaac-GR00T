@@ -894,7 +894,14 @@ class Eagle3_VLProcessor(ProcessorMixin):
             if hasattr(processor, key):
                 setattr(processor, key, kwargs.pop(key))
 
-        kwargs.update(unused_kwargs)
+        #kwargs.update(unused_kwargs)
+        ### CK
+        if isinstance(unused_kwargs, dict):
+                kwargs.update(unused_kwargs)
+        else:
+            # Recent transformers return a list of keys, which we cannot use to update the dict
+            kwargs.update(unused_kwargs[0])
+        ###
         logger.info(f"Processor {processor}")
         if return_unused_kwargs:
             return processor, kwargs

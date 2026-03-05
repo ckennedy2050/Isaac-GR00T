@@ -5,6 +5,31 @@ import os
 from pathlib import Path
 
 import tyro
+import torch
+
+# -----------------------------------------------------------------------------
+# WORKAROUND: RTX PRO 6000 (Blackwell) Support
+# Triton currently crashes on sm_120. We spoof sm_90 (Hopper) to bypass this.
+# Blackwell is backward compatible with Hopper kernels.
+# -----------------------------------------------------------------------------
+if torch.cuda.is_available():
+    original_get_capability = torch.cuda.get_device_capability
+
+    def patched_get_capability(device=None):
+        # Allow the user to query specific devices, but default to current
+        if device is None:
+            device = torch.cuda.current_device()
+
+        # Get the real capability
+        real_cap = original_get_capability(device)
+
+        # If the device is Blackwell (sm_120 ie major=12), spoof it as Hopper (sm_90 ie 9,0)
+        if real_cap[0] == 12:
+            return (9, 0)
+        return real_cap
+
+    torch.cuda.get_device_capability = patched_get_capability
+# -----------------------------------------------------------------------------
 
 from gr00t.configs.base_config import get_default_config
 from gr00t.configs.finetune_config import FinetuneConfig
@@ -61,6 +86,10 @@ if __name__ == "__main__":
     config.model.state_dropout_prob = ft_config.state_dropout_prob
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
+    
+    # Depth encoder settings
+    config.model.use_depth_encoder = ft_config.use_depth_encoder
+    config.model.tune_depth_encoder = ft_config.tune_depth_encoder
 
     config.model.load_bf16 = False
     config.model.reproject_vision = False
@@ -70,7 +99,8 @@ if __name__ == "__main__":
     config.model.use_relative_action = True
 
     config.training.start_from_checkpoint = ft_config.base_model_path
-    config.training.optim = "adamw_torch"
+    #config.training.optim = "adamw_torch"
+    config.training.optim = "paged_adamw_8bit"  # Gemini recommends this one to save VRAM
     config.training.global_batch_size = ft_config.global_batch_size
     config.training.dataloader_num_workers = ft_config.dataloader_num_workers
     config.training.learning_rate = ft_config.learning_rate
