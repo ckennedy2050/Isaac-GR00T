@@ -13,7 +13,7 @@ from curve_sla import ArmModality
 
 
 ########################################################################################################################
-ACTION_MODALITY = ArmModality.JOINT
+ACTION_MODALITY = ArmModality.POSE
 
 video_keys = [
     "image_workspace",

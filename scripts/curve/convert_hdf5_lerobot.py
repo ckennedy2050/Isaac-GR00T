@@ -109,7 +109,7 @@ def process_video_and_get_stats(images_np, output_path, fps, is_depth=False):
 
     if is_depth:
         # Replace NaNs and Infs with 0.0 before processing
-        images_np = np.nan_to_num(images_np, nan=0.0, posinf=0.0, neginf=0.0)
+        #images_np = np.nan_to_num(images_np, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Apply your function to every frame in the sequence
         processed_frames = [convert_depth_to_greyscale_rgb(frame) for frame in images_np]

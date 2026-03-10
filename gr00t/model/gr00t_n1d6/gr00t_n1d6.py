@@ -545,6 +545,7 @@ class Gr00tN1d6(PreTrainedModel):
             # Check for NaNs in depth features
             if torch.isnan(depth_features).any():
                 print("Warning: Depth features contain NaNs! This will cause training instability.")
+                raise ValueError("Depth features contain NaNs!")
             
             # Concatenate depth features to backbone features
             # Assuming backbone_features is [B, T, D] and depth_features is [B, D] or [B, T, D]

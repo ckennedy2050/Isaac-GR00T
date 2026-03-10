@@ -93,6 +93,16 @@ class Gr00tN1d6Pipeline(ModelPipeline):
                         0.02 * torch.randn_like(model.action_head.mask_token)
                     )
                 logging.info("mask_token not in checkpoint - initialized")
+            
+            # FORCE RE-INIT DEPTH ENCODER
+            if model.depth_encoder is not None:
+                 print("Forcing re-initialization of Depth Encoder to fix NaN weights...")
+                 # Re-create it to get fresh ImageNet weights
+                 from gr00t.model.modules.depth_encoder import DepthEncoder
+                 model.depth_encoder = DepthEncoder(output_dim=model.config.depth_encoder_output_dim)
+                 model.depth_encoder.to(model.device, dtype=model.dtype)
+                 if not model.config.tune_depth_encoder:
+                     model.depth_encoder.requires_grad_(False)
 
         else:
             model = self.model_class(
