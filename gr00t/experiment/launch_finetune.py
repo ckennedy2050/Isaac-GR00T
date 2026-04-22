@@ -21,31 +21,6 @@ import os
 from pathlib import Path
 
 import tyro
-import torch
-
-# -----------------------------------------------------------------------------
-# WORKAROUND: RTX PRO 6000 (Blackwell) Support
-# Triton currently crashes on sm_120. We spoof sm_90 (Hopper) to bypass this.
-# Blackwell is backward compatible with Hopper kernels.
-# -----------------------------------------------------------------------------
-if torch.cuda.is_available():
-    original_get_capability = torch.cuda.get_device_capability
-
-    def patched_get_capability(device=None):
-        # Allow the user to query specific devices, but default to current
-        if device is None:
-            device = torch.cuda.current_device()
-
-        # Get the real capability
-        real_cap = original_get_capability(device)
-
-        # If the device is Blackwell (sm_120 ie major=12), spoof it as Hopper (sm_90 ie 9,0)
-        if real_cap[0] == 12:
-            return (9, 0)
-        return real_cap
-
-    torch.cuda.get_device_capability = patched_get_capability
-# -----------------------------------------------------------------------------
 
 from gr00t.configs.base_config import get_default_config
 from gr00t.configs.finetune_config import FinetuneConfig

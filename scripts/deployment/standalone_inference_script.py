@@ -38,48 +38,6 @@ import torch
 import tyro
 import yaml
 
-# This workaround is executed in policy/gr00t_policy.py
-# -----------------------------------------------------------------------------
-# WORKAROUND: RTX PRO 6000 (Blackwell) Support
-# Triton currently crashes on sm_120. We spoof sm_90 (Hopper) to bypass this.
-# Blackwell is backward compatible with Hopper kernels.
-# -----------------------------------------------------------------------------
-if torch.cuda.is_available():
-    original_get_capability = torch.cuda.get_device_capability
-
-    def patched_get_capability(device=None):
-        # Allow the user to query specific devices, but default to current
-        if device is None:
-            device = torch.cuda.current_device()
-
-        # Get the real capability
-        real_cap = original_get_capability(device)
-
-        print(f"Detected GPU arch capability: {real_cap}")
-        # If the device is Blackwell (sm_120 ie major=12), spoof it as Hopper (sm_90 ie 9,0)
-        if real_cap[0] == 12:
-            print('Spoofing Hopper arch to avoid lack of Blackwell support')
-            return (9, 0)
-        return real_cap
-
-    torch.cuda.get_device_capability = patched_get_capability
-# -----------------------------------------------------------------------------
-# if torch.cuda.is_available():
-#     original_cuda_is_available = torch.cuda.is_available
-#
-#     def patched_cuda_is_available():
-#         # Override default torch function
-#         print('Spoofing torch.cuda.is_available() to support CPU processing')
-#         return False
-#
-#     torch.cuda.is_available = patched_cuda_is_available
-
-
-
-
-
-
-
 
 warnings.simplefilter("ignore", category=FutureWarning)
 
