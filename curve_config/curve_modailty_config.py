@@ -6,10 +6,9 @@ import os
 import sys
 
 current_dir = os.path.dirname(__file__)
-module_dir = os.path.join(current_dir, '..', 'scripts', 'curve')
-sys.path.append(module_dir)
+sys.path.append(current_dir)
 
-from curve_sla import ArmModality
+from . import ArmModality
 
 
 ########################################################################################################################
@@ -87,6 +86,9 @@ def get_modality_config():
         delta_indices=observation_indices,
         modality_keys=language_keys,
     )
+    # TODO: Apply ActionConfigs to new modalities (see gr00t/configs/data/embodiment_configs.py)
+    #action_configs=action_configs
+
     modality_configs = {
         "video": video_modality,
         "depth": depth_modality,
