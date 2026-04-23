@@ -32,13 +32,25 @@ def load_modality_config(modality_config_path: str):
     import importlib
     import sys
 
-    path = Path(modality_config_path)
-    if path.exists() and path.suffix == ".py":
-        sys.path.append(str(path.parent))
-        importlib.import_module(path.stem)
-        print(f"Loaded modality config: {path}")
-    else:
+    path = Path(modality_config_path).resolve()
+    if not (path.exists() and path.suffix == ".py"):
         raise FileNotFoundError(f"Modality config path does not exist: {modality_config_path}")
+
+    if (path.parent / "__init__.py").exists():
+        # File lives inside a package — put the package's parent on sys.path
+        # and import as "<package>.<module>" so absolute and relative imports
+        # (e.g. `from curve_config import ArmModality`) both resolve.
+        pkg_parent = str(path.parent.parent)
+        if pkg_parent not in sys.path:
+            sys.path.insert(0, pkg_parent)
+        importlib.import_module(f"{path.parent.name}.{path.stem}")
+    else:
+        # Loose file — import as a top-level module.
+        parent = str(path.parent)
+        if parent not in sys.path:
+            sys.path.insert(0, parent)
+        importlib.import_module(path.stem)
+    print(f"Loaded modality config: {path}")
 
 
 if __name__ == "__main__":

@@ -479,7 +479,7 @@ def convert_dataset(
     root: str | Path | None = None,
     force_conversion: bool = False,
 ) -> None:
-    root = HF_LEROBOT_HOME / repo_id if root is None else Path(root) / repo_id
+    root = HF_LEROBOT_HOME / repo_id if root is None else Path(root) #/ repo_id
 
     if root.exists() and force_conversion:
         logging.info("--force-conversion enabled: removing existing snapshot at %s", root)
@@ -516,7 +516,8 @@ def convert_dataset(
     copy_ancillary_directories(root, new_root)
 
     shutil.move(str(root), str(backup_root))
-    shutil.move(str(new_root), str(root))
+    # CK - Leave them named explicitly
+    #shutil.move(str(new_root), str(root))
 
 
 def parse_args() -> argparse.Namespace:

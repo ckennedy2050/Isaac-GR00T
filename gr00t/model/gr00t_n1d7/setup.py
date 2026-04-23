@@ -104,20 +104,27 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                         0.02 * torch.randn_like(model.action_head.mask_token)
                     )
                 logging.info("mask_token not in checkpoint - initialized")
-            
-            # FORCE RE-INIT DEPTH ENCODER
-            if model.depth_encoder is not None:
-                 print("Forcing re-initialization of Depth Encoder to fix NaN weights...")
-                 # Re-create it to get fresh ImageNet weights
-                 from gr00t.model.modules.depth_encoder import DepthEncoder
-                 model.depth_encoder = DepthEncoder(output_dim=model.config.depth_encoder_output_dim)
-                 model.depth_encoder.to(model.device, dtype=model.dtype)
-                 if not model.config.tune_depth_encoder:
-                     model.depth_encoder.requires_grad_(False)
+
+            # Re-initialize the depth encoder with fresh ImageNet weights when the
+            # checkpoint has no depth_encoder.* keys (e.g. starting from the base
+            # N1.7 checkpoint). Without this, HF reports NaN-filled tensors for the
+            # unloaded buffers.
+            depth_encoder_missing = any("depth_encoder" in key for key in missing_keys)
+            if depth_encoder_missing and model.depth_encoder is not None:
+                from gr00t.model.modules.depth_encoder import DepthEncoder
+
+                model.depth_encoder = DepthEncoder(output_dim=model.config.depth_encoder_output_dim)
+                model.depth_encoder.to(model.device, dtype=model.dtype)
+                if not model.config.tune_depth_encoder:
+                    model.depth_encoder.requires_grad_(False)
+                logging.info("depth_encoder not in checkpoint - initialized from ImageNet weights")
 
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
-            other_missing = [k for k in missing_keys if "mask_token" not in k]
+            other_missing = [
+                k for k in missing_keys
+                if "mask_token" not in k and "depth_encoder" not in k
+            ]
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")

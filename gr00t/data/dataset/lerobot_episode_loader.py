@@ -424,9 +424,10 @@ class LeRobotEpisodeLoader:
             # Use the video key mapping if the config key differs from the dataset meta key.
             meta_key = self._video_key_mapping.get(image_key, image_key)
             if modality_name == "depth":
-                # Depth maps live under observation.depth.<key> rather than observation.images.<key>.
-                video_meta = self.modality_meta.get("video", {}).get(meta_key, {})
-                original_key = video_meta.get("original_key", f"observation.depth.{meta_key}")
+                # Depth entries live under modality_meta["depth"]; fall back to the
+                # observation.depth.<key> convention only when nothing is declared.
+                depth_meta = self.modality_meta.get("depth", {}).get(meta_key, {})
+                original_key = depth_meta.get("original_key", f"observation.depth.{meta_key}")
             else:
                 original_key = self.modality_meta["video"][meta_key].get(
                     "original_key", f"observation.images.{meta_key}"
