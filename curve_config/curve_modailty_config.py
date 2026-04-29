@@ -53,14 +53,54 @@ if ACTION_MODALITY == ArmModality.POSE:
             "gripper",
         ])
 
+# This is a hack for using datasets that already store delta values
+# Standard practice in 1.7+ should be to convert all data as absolute, then flip the ActionRepresentation to RELATIVE for deltas
+# This relative conversion all happens internally, and the model will train on deltas, and output absolute on inference.
+elif ACTION_MODALITY == ArmModality.DELTA_POSE:
+
+    action_modality = ModalityConfig(
+        delta_indices=action_indices,
+        modality_keys=["eef_dpose_euler", "gripper", "terminate"],
+        action_configs=[
+            # Action `eef_dpose_euler` is already a delta in the parquet, so use
+            # ABSOLUTE here — RELATIVE would tell the loader to compute delta of
+            # delta against `state.eef_pose_euler`.
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+                state_key="gripper",
+            ),
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+        ],
+    )
+
+
+    state_modality = ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["eef_pose_euler", "gripper", "pad"],
+    )
+
+
+
+
 elif ACTION_MODALITY == ArmModality.EEF_9D:
 
     action_modality = ModalityConfig(
-        delta_indices=list(range(40)),
+        delta_indices=action_indices,
         modality_keys=["eef_9d", "gripper", "terminate"],
         action_configs=[
             ActionConfig(
-                rep=ActionRepresentation.ABSOLUTE,
+                rep=ActionRepresentation.RELATIVE,  # Flip to use absolute. Also use_relative param in launch_finetune.py
                 type=ActionType.EEF,
                 format=ActionFormat.XYZ_ROT6D,
                 state_key="eef_9d",
@@ -75,7 +115,7 @@ elif ACTION_MODALITY == ArmModality.EEF_9D:
                 rep=ActionRepresentation.ABSOLUTE,
                 type=ActionType.NON_EEF,
                 format=ActionFormat.DEFAULT,
-                state_key="terminate",
+            state_key="terminate",
             ),
         ],
     )

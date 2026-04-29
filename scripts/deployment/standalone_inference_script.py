@@ -18,6 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import logging
 import os
+from enum import Enum
 from pathlib import Path
 import random
 import re
@@ -221,6 +222,26 @@ def replace_dit_with_tensorrt(policy: Gr00tPolicy | Any, trt_engine_path: str, d
 # TENSORRT Module Wrappers End
 ###############################################################################
 
+class ModalityRotType(Enum):
+    EULER = 1
+    NON_EULER = 2
+    JOINT = 3
+    OTHER = 4
+
+    @classmethod
+    def from_keys(cls, keys: list[str]):
+        if not keys:
+            return ModalityRotType.OTHER
+
+        first = keys[0].lower()
+        if first == "x" or "pose" in first:
+            return ModalityRotType.EULER
+        elif "9d" in first or "quat" in first:
+            return ModalityRotType.NON_EULER
+        elif "joint" in first:
+            return ModalityRotType.JOINT
+        else:
+            return ModalityRotType.OTHER
 
 def plot_trajectory_results(
     state_joints_across_time: np.ndarray,
@@ -230,7 +251,6 @@ def plot_trajectory_results(
     state_keys: list[str],
     action_keys: list[str],
     action_horizon: int,
-    do_cumsum: bool,
     save_plot_path: str,
     show_plot: bool,
 ) -> None:
@@ -245,22 +265,66 @@ def plot_trajectory_results(
         state_keys: List of state modality keys
         action_keys: List of action modality keys
         action_horizon: Action horizon used for inference
-        do_cumsum: When True, plots a cumulative sum of the arm action dimensions
         save_plot_path: Path to save the plot
         show_plot: Show the plot on screen
     """
-    # Convert all inputs from Radians to Degrees
-    state_joints_across_time = np.rad2deg(state_joints_across_time)
-    gt_action_across_time = np.rad2deg(gt_action_across_time)
-    pred_action_across_time = np.rad2deg(pred_action_across_time)
+    # Detect pose vs joint modality from action keys.
+    # Pose modalities have xyz at dims 0-2 (meters, must NOT be rad2deg'd).
+    # Joint modalities have joint angles at dims 0-6 (radians, convert to degrees).
+    # def _is_euler_modality(keys: list[str]) -> bool:
+    #     if not keys:
+    #         return False
+    #     first = keys[0].lower()
+    #     return first == "x" or "eef" in first or "pose" in first
+
+    # Delta modalities encode per-step deltas in the parquet (e.g. eef_dpose_euler).
+    # NOTE: do not key off ActionConfig.rep == RELATIVE here — RELATIVE means the
+    # loader computes deltas at training time from absolute parquet values, but
+    # `policy.get_action()` calls unapply_action which converts back to absolute,
+    # and `gt_action_across_time` is read straight from the parquet (also absolute).
+    # Both are absolute by the time they reach this plot, so cumsum would double-integrate.
+    def _is_delta_modality(keys: list[str]) -> bool:
+        for k in keys:
+            kl = k.lower()
+            if "dpose" in kl or "delta" in kl or "relative" in kl:
+                return True
+        return False
+
+    #euler_modality = _is_euler_modality(action_keys) or _is_euler_modality(state_keys)
+    state_modality_rot_type = ModalityRotType.from_keys(state_keys)
+    action_modality_rot_type = ModalityRotType.from_keys(action_keys)
+    if state_modality_rot_type != action_modality_rot_type:
+        modality_rot_type = ModalityRotType.OTHER
+    else:
+        modality_rot_type = action_modality_rot_type
+
+    do_cumsum = _is_delta_modality(action_keys)
+
+    # Copy so we don't mutate the caller's arrays.
+    state_joints_across_time = state_joints_across_time.astype(np.float64, copy=True)
+    gt_action_across_time = gt_action_across_time.astype(np.float64, copy=True)
+    pred_action_across_time = pred_action_across_time.astype(np.float64, copy=True)
+
+    if modality_rot_type == ModalityRotType.EULER:
+        # Skip xyz (dims 0-2); convert remaining dims (rotation + any trailing joint angles).
+        for arr in (state_joints_across_time, gt_action_across_time, pred_action_across_time):
+            if arr.shape[1] > 3:
+                arr[:, 3:] = np.rad2deg(arr[:, 3:])
+    elif modality_rot_type == ModalityRotType.JOINT:
+        # Joint modality: convert first 7 dims (joints) only; leave gripper/terminate untouched.
+        for arr in (state_joints_across_time, gt_action_across_time, pred_action_across_time):
+            n = min(7, arr.shape[1])
+            arr[:, :n] = np.rad2deg(arr[:, :n])
 
     if do_cumsum:
         print('Summing action space')
-        gt_action_sum = np.cumsum(gt_action_across_time[:, :6], axis=0)
-        pred_action_sum = np.cumsum(pred_action_across_time[:, :6], axis=0)
+        # Deltas are applied on top of the initial ground-truth observation,
+        # so cumsum starts from state[0, :6] rather than 0.
+        n = min(6, state_joints_across_time.shape[1], gt_action_across_time.shape[1])
+        offset = state_joints_across_time[0, :n]
 
-        gt_action_across_time[:, :6] = gt_action_sum
-        pred_action_across_time[:, :6] = pred_action_sum
+        gt_action_across_time[:, :n] = np.cumsum(gt_action_across_time[:, :n], axis=0) + offset
+        pred_action_across_time[:, :n] = np.cumsum(pred_action_across_time[:, :n], axis=0) + offset
 
     actual_steps = len(gt_action_across_time)
     action_dim = gt_action_across_time.shape[1]
@@ -562,9 +626,8 @@ def evaluate_predictions(
     traj_id,
     actual_steps,
     action_horizon,
-    do_cumsum=False,
     save_plot_path=None,
-    show_plot=False
+    show_plot=False,
 ):
     def extract_state_joints(traj: pd.DataFrame, columns: list[str]):
         np_dict = {}
@@ -603,7 +666,6 @@ def evaluate_predictions(
         state_keys=state_keys,
         action_keys=action_keys,
         action_horizon=action_horizon,
-        do_cumsum=do_cumsum,
         save_plot_path=save_plot_path or f"/tmp/stand_alone_inference/traj_{traj_id}.jpeg",
         show_plot=show_plot,
     )
@@ -658,9 +720,6 @@ class ArgsConfig:
 
     show_plot: bool = True
     """Whether to render plots on screen"""
-
-    cumsum: bool = False
-    """Whether to plot cumulative some of arm actions"""
 
     skip_timing_steps: int = 1
     """Number of initial inference steps to skip when calculating timing statistics (default: 1 to exclude warmup)."""
@@ -823,7 +882,6 @@ def main(args: ArgsConfig):
                 traj_id,
                 actual_steps,
                 args.action_horizon,
-                do_cumsum=args.cumsum,
                 save_plot_path=args.save_plot_path,
                 show_plot=args.show_plot,
             )
