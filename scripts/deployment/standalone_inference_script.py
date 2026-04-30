@@ -16,6 +16,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
+import glob
 import logging
 import os
 from enum import Enum
@@ -618,6 +619,164 @@ def run_single_trajectory(
     )
 
 
+def plot_npz_replay(
+    pred_standalone: list[dict[str, np.ndarray]],
+    pred_live: list[dict[str, np.ndarray]],
+    save_dir: str,
+    show: bool = False,
+) -> None:
+    """Plot standalone vs live predictions across all replayed npz dumps.
+
+    For each output key we stack predictions over all inference calls
+    (shape: N_calls × N_horizon × D), flatten time, and plot one subplot per
+    dim with chunk boundaries marked.
+    """
+    if not pred_standalone or not pred_live:
+        return
+
+    keys = [k for k in pred_standalone[0].keys() if k in pred_live[0]]
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    for key in keys:
+        try:
+            s_stack = np.stack([np.asarray(p[key]) for p in pred_standalone], axis=0)
+            l_stack = np.stack([np.asarray(p[key]) for p in pred_live], axis=0)
+        except Exception as e:
+            logging.warning(f"Could not stack key '{key}' for plotting: {e}")
+            continue
+
+        # Drop the (1,) batch dim that policy.get_action emits.
+        if s_stack.ndim == 4 and s_stack.shape[1] == 1:
+            s_stack = s_stack[:, 0]
+            l_stack = l_stack[:, 0]
+        if s_stack.ndim != 3 or s_stack.shape != l_stack.shape:
+            logging.warning(
+                f"Key '{key}': unexpected shapes standalone={s_stack.shape} live={l_stack.shape}"
+            )
+            continue
+
+        N, H, D = s_stack.shape
+        s_flat = s_stack.reshape(N * H, D)
+        l_flat = l_stack.reshape(N * H, D)
+        diff = np.abs(s_flat - l_flat)
+
+        fig, axes = plt.subplots(D, 1, figsize=(14, 2.0 * D), sharex=True)
+        if D == 1:
+            axes = [axes]
+
+        for d in range(D):
+            ax = axes[d]
+            ax.plot(s_flat[:, d], label="standalone", color="tab:blue", linewidth=1.2)
+            ax.plot(
+                l_flat[:, d], label="live", color="tab:orange", linewidth=1.2, linestyle="--"
+            )
+            for ci in range(0, N * H + 1, H):
+                ax.axvline(ci, color="gray", alpha=0.25, linewidth=0.5)
+            ax.set_ylabel(f"{key}[{d}]\nmax_diff={diff[:, d].max():.3e}")
+            if d == 0:
+                ax.legend(loc="upper right", fontsize=8)
+
+        axes[-1].set_xlabel("step index  (chunk_idx × horizon + horizon_idx)")
+        fig.suptitle(
+            f"{key} — standalone vs live across {N} inference calls × {H} horizon steps",
+            fontsize=12,
+        )
+        fig.tight_layout()
+
+        out_path = save_path / f"npz_replay_{key}.png"
+        fig.savefig(out_path, dpi=120)
+        logging.info(f"Saved plot: {out_path}")
+        if show:
+            plt.show()
+        plt.close(fig)
+
+
+def run_npz_replay(
+    policy: BasePolicy,
+    npz_dir: str,
+    save_plot_dir: str | None = None,
+    show_plot: bool = False,
+) -> list[dict[str, np.ndarray]]:
+    """Replay observations dumped by Gr00tPolicyNode (live inference) through this
+    standalone policy and report any divergence in the predicted action chunk.
+
+    Each .npz is expected to contain keys of the form 'input.<modality>.<sub_key>'
+    (and optionally 'output.<key>') as produced by Gr00tPolicyNode._dump_inference.
+    """
+    files = sorted(glob.glob(os.path.join(npz_dir, "*.npz")))
+    if not files:
+        raise FileNotFoundError(f"No .npz files found in {npz_dir}")
+
+    logging.info(f"Replaying {len(files)} dumps from {npz_dir}")
+    pred_standalone: list[dict[str, np.ndarray]] = []
+    pred_live: list[dict[str, np.ndarray]] = []
+
+    for fp in files:
+        data = np.load(fp, allow_pickle=False)
+
+        inputs: dict[str, Any] = {}
+        live_outputs: dict[str, np.ndarray] = {}
+
+        for key in data.files:
+            arr = data[key]
+            if key.startswith("input."):
+                # split prefix from modality from sub_key. sub_key may itself
+                # contain dots (e.g. "annotation.human.action.task_description"),
+                # so cap split count at 2.
+                parts = key.split(".", 2)
+                if len(parts) != 3:
+                    continue
+                _, modality, sub = parts
+                # Convert numpy string arrays back to nested python lists, which
+                # is the format the live policy used for the language modality.
+                if arr.dtype.kind in ("U", "S"):
+                    arr = arr.tolist()
+                inputs.setdefault(modality, {})[sub] = arr
+            elif key.startswith("output."):
+                live_outputs[key[len("output."):]] = arr
+
+        output, _ = policy.get_action(inputs)
+        pred_standalone.append({k: np.asarray(v) for k, v in output.items()})
+        if live_outputs:
+            pred_live.append({k: np.asarray(v) for k, v in live_outputs.items()})
+
+        logging.info(f"\n{os.path.basename(fp)}:")
+        if live_outputs:
+            for k, v in output.items():
+                if k not in live_outputs:
+                    continue
+                a = np.asarray(v).astype(np.float64)
+                b = np.asarray(live_outputs[k]).astype(np.float64)
+                if a.shape != b.shape:
+                    logging.info(f"  {k}: shape mismatch standalone={a.shape} live={b.shape}")
+                    continue
+                diff = np.abs(a - b)
+                logging.info(
+                    f"  {k}: shape={a.shape}  max_diff={diff.max():.6e}  "
+                    f"mean_diff={diff.mean():.6e}"
+                )
+                # Per-dim breakdown for eef_9d so xyz vs rot6d divergence is visible.
+                if k == "eef_9d" and a.ndim >= 2 and a.shape[-1] == 9:
+                    per_dim_max = diff.reshape(-1, 9).max(axis=0)
+                    logging.info(
+                        f"    xyz_max=[{per_dim_max[0]:.3e}, {per_dim_max[1]:.3e}, "
+                        f"{per_dim_max[2]:.3e}]  rot6d_max={per_dim_max[3:].max():.3e}"
+                    )
+        else:
+            logging.info("  (no live output saved in this dump — replay-only mode)")
+            for k, v in output.items():
+                a = np.asarray(v)
+                logging.info(f"  {k}: shape={a.shape}")
+
+    if pred_live and len(pred_live) == len(pred_standalone):
+        plot_npz_replay(
+            pred_standalone, pred_live, save_plot_dir or npz_dir, show=show_plot
+        )
+
+    return pred_standalone
+
+
 def evaluate_predictions(
     state_keys,
     action_keys,
@@ -733,6 +892,11 @@ class ArgsConfig:
     seed: int = 42
     """Seed to use for reproducibility."""
 
+    npz_dir: str | None = None
+    """If set, replay observations from a directory of .npz files (dumped by
+    Gr00tPolicyNode._dump_inference) instead of using LeRobotEpisodeLoader.
+    Skips dataset loading entirely and reports diffs against any saved live outputs."""
+
 
 def main(args: ArgsConfig):
     # Set up logging
@@ -814,6 +978,21 @@ def main(args: ArgsConfig):
     # Get the supported modalities for the policy
     modality = policy.get_modality_config()
     logging.info(f"Current modality config: \n{modality}")
+
+    # NPZ replay path: bypass dataset loading entirely and feed dumped observations.
+    if args.npz_dir:
+        logging.info("\n" + "=" * 80)
+        logging.info(f"=== NPZ Replay Mode: {args.npz_dir} ===")
+        logging.info("=" * 80)
+        pred_actions = run_npz_replay(
+            policy,
+            args.npz_dir,
+            save_plot_dir=args.save_plot_path,
+            show_plot=args.show_plot,
+        )
+        logging.info("=" * 80)
+        logging.info("Done")
+        return pred_actions, None
 
     # Dataset creation
     logging.info("\n" + "=" * 80)
